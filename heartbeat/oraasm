@@ -20,11 +20,19 @@
 OCF_RESKEY_user_default="grid"
 OCF_RESKEY_diskgroup_default=""
 OCF_RESKEY_home_default=""
+OCF_RESKEY_monitor_resources_default="ora.asm"
 
 : ${OCF_RESKEY_user=${OCF_RESKEY_user_default}}
 : ${OCF_RESKEY_diskgroup=${OCF_RESKEY_diskgroup_default}}
 : ${OCF_RESKEY_home=${OCF_RESKEY_home_default}}
+: ${OCF_RESKEY_monitor_resources=${OCF_RESKEY_monitor_resources_default}}
 
+# Use runuser if available for SELinux.
+if [ -x /sbin/runuser ]; then
+    SU=runuser
+else
+    SU=su
+fi
 
 oraasm_usage() {
 	cat <<END
@@ -71,6 +79,14 @@ If not specified, then the Disk Group along with its home should be listed in /e
 <content type="string" default="${OCF_RESKEY_home_default}" />
 </parameter>
 
+<parameter name="monitor_resources">
+    <longdesc lang="en">
+Comma separated name of the Oracle Local/Cluster Resources to be monitored
+    </longdesc>
+    <shortdesc lang="en">Oracle Resources to be monitored</shortdesc>
+<content type="string" default="${OCF_RESKEY_monitor_resources_default}" />
+</parameter>
+
 </parameters>
 
 <actions>
@@ -111,6 +127,46 @@ EOF
 	trap "rm -f $ORA_ENVF" EXIT
 }
 
+oraasm_monitor_sub_resources() {
+	local resource_list=$(echo "${OCF_RESKEY_monitor_resources}" | sed 's/[[:blank:]]*,[[:blank:]]*/ /g')
+	local total_resources=$(echo "$resource_list" | wc -w)
+	local start_time=$(date +%s)
+	local online_count=0
+
+	while [ "$online_count" -ne "$total_resources" ]; do
+		online_count=0
+		local crs_output
+		crs_output=$($SU - "$OCF_RESKEY_user" -c ". $ORA_ENVF; crsctl stat res $resource_list -t")
+
+		for resource in $resource_list; do
+			local status_line=$(echo "$crs_output" | grep -A 1 "^$resource$" | tail -n 1)
+			local RES_STATE=$(echo "$status_line" | awk '{ if ($1 ~ /^[0-9]+$/) print $2, $3; else print $1, $2 }')
+
+			if [ "$RES_STATE" = "ONLINE ONLINE" ]; then
+				ocf_log info "Current state of Oracle resource $resource : $RES_STATE"
+				online_count=$((online_count + 1))
+			else
+				ocf_log warn "Current state of Oracle resource $resource : $RES_STATE"
+			fi
+		done
+
+		if [ "$online_count" -eq "$total_resources" ]; then
+			return $OCF_SUCCESS
+		fi
+
+		# Calculate actual elapsed time
+		local current_time=$(date +%s)
+		local elapsed_time=$((current_time - start_time))
+
+		if [ "$elapsed_time" -ge "$(( (${OCF_RESKEY_CRM_meta_timeout:-60000} / 1000) - 5 ))" ]; then
+			ocf_log warn "Approaching timeout window to complete the $__OCF_ACTION operation. Elapsed: ${elapsed_time}s."
+		fi
+
+		# Not completely online yet, wait for 3sec and retry ...
+		sleep 3
+	done
+}
+
 oraasm_start() {
 	# if resource is already running, no need to continue code after this.
 	if oraasm_monitor; then
@@ -147,10 +203,16 @@ oraasm_stop() {
 }
 
 oraasm_monitor() {
-	su - $OCF_RESKEY_user -c ". $ORA_ENVF; crsctl check has | grep -q \"CRS-4638\""
+	$SU - $OCF_RESKEY_user -c ". $ORA_ENVF; crsctl check has | grep -q \"CRS-4638\""
 	case "$?" in
 		0)
-			rc=$OCF_SUCCESS
+			if [ "$__OCF_ACTION" = "stop" ]; then
+				# If stopping, we only care that ohasd is still alive.
+				return $OCF_SUCCESS
+			fi
+
+			oraasm_monitor_sub_resources
+			rc=$?
 			;;
 		1)
 			rc=$OCF_NOT_RUNNING
@@ -174,7 +236,6 @@ oraasm_validate_all() {
 		return $OCF_ERR_CONFIGURED
 	fi
 }
-
 
 OCF_REQUIRED_PARAMS="user diskgroup"
 OCF_REQUIRED_BINARIES="/etc/init.d/ohasd crsctl"
