@@ -295,6 +295,7 @@ Set max_backup_snapshots=0 to disable backups.
 Path to a kubeconfig file for querying Machine API objects. Used to detect
 whether a peer node's Machine is being deleted, preventing the resource agent
 from re-adding it as an etcd learner during Machine deletion flows.
+Supports both MAPI (machine.openshift.io) and CAPI (cluster.x-k8s.io) Machine resources.
 </longdesc>
 <shortdesc lang="en">Kubeconfig for Machine API queries</shortdesc>
 <content type="string" default="${OCF_RESKEY_kubeconfig_default}"/>
@@ -1525,15 +1526,39 @@ is_peer_machine_deleting()
 	local node_name="$1"
 	local out
 	local deletion_ts
+	local oc_rc
+	local item_count
 
-	out=$(timeout 10 oc --kubeconfig="$OCF_RESKEY_kubeconfig" get machines \
+	# Try MAPI first (machine.openshift.io), fall back to CAPI (cluster.x-k8s.io)
+	out=$(timeout 10 oc --kubeconfig="$OCF_RESKEY_kubeconfig" get machines.machine.openshift.io \
 		-n openshift-machine-api -o json 2>&1)
-	if [ $? -ne 0 ]; then
-		ocf_log warn "could not query Machine API for node $node_name (fail-open): $out"
-		return 1
+	oc_rc=$?
+
+	if [ $oc_rc -eq 0 ]; then
+		item_count=$(printf "%s" "$out" | jq '.items | length' 2>/dev/null)
+	fi
+
+	# MAPI CRD missing, namespace absent, or no Machine objects — try CAPI
+	if [ $oc_rc -ne 0 ] || [ "${item_count:-0}" -eq 0 ]; then
+		ocf_log info "MAPI returned no machines, trying CAPI for node $node_name"
+		out=$(timeout 10 oc --kubeconfig="$OCF_RESKEY_kubeconfig" get machines.cluster.x-k8s.io \
+			-n openshift-cluster-api -o json 2>&1)
+		if [ $? -ne 0 ]; then
+			ocf_log warn "could not query Machine API (MAPI or CAPI) for node $node_name (fail-open): $out"
+			return 1
+		fi
 	fi
 
 	# Select the Machine object for the given node and extract its deletionTimestamp if present
+	local machine_count
+	machine_count=$(printf "%s" "$out" | jq -r --arg name "$node_name" \
+		'[.items[] | select(.status.nodeRef.name == $name)] | length' 2>/dev/null)
+
+	if [ "$machine_count" = "0" ] || [ -z "$machine_count" ]; then
+		ocf_log warn "No Machine object found for node $node_name (fail-open): nodeRef may not be populated yet"
+		return 1
+	fi
+
 	deletion_ts=$(printf "%s" "$out" | jq -r --arg name "$node_name" \
 		'.items[] | select(.status.nodeRef.name == $name) | .metadata.deletionTimestamp // empty')
 
@@ -1609,9 +1634,12 @@ manage_peer_membership()
 		# Clean up a learner added before the Machine deletion started
 		if is_peer_machine_deleting "$peer_member_name"; then
 			ocf_log info "peer Machine is being deleted, removing learner $peer_member_name from member list"
-			remove_etcd_member_by_ip "$peer_member_ip"
-			attribute_learner_node clear
-			set_standalone_node
+			if remove_etcd_member_by_ip "$peer_member_ip"; then
+				attribute_learner_node clear
+				set_standalone_node
+			else
+				ocf_log err "failed to remove learner for deleting Machine $peer_member_name; will retry next monitor cycle"
+			fi
 			return
 		fi
 		if [ -z "$current_learner_node" ]; then
