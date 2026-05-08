@@ -2524,18 +2524,12 @@ podman_notify()
 
 	ocf_log info "notify: type=${notify_type}, operation=${notify_operation}, nodes { active=[${OCF_RESKEY_CRM_meta_notify_active_uname}], start=[${OCF_RESKEY_CRM_meta_notify_start_uname}], stop=[${OCF_RESKEY_CRM_meta_notify_stop_uname}] }, resources { active=[${OCF_RESKEY_CRM_meta_notify_active_resource}], start =[${OCF_RESKEY_CRM_meta_notify_start_resource}], stop=[${OCF_RESKEY_CRM_meta_notify_stop_resource}] }"
 
-	# Pacemaker serializes operations per resource per node. The start sequence
-	# with notifications is:
-	#   pre-notify(start) on peer → start on joiner → post-notify(start) on peer
-	# Between pre-notify and post-notify, the peer's recurring monitor is
-	# queued — Pacemaker won't overlap operations for the same resource on the
-	# same node. The monitor path (check_peer → manage_peer_membership →
-	# add_member_as_learner) is the primary way a running peer adds the
-	# starting node to the etcd member list. Without handling it here, the
-	# starting node's podman_start poll loop (waiting for learner_node attribute)
-	# deadlocks: start waits for learner_node, monitor waits for start to finish.
-	# pre_notify_start fires before the start action, giving us the window to
-	# add the learner so the joiner's poll loop finds it immediately.
+	# Pacemaker suppresses the peer's monitor during an
+	# active start/notify cycle. Since monitor is the only path that calls
+	# add_member_as_learner (outside force_new_cluster), the joiner's
+	# podman_start poll loop deadlocks; it waits for learner_node, but
+	# no monitor runs to set it. pre_notify_start fires before start,
+	# so we add the learner here to break the deadlock
 	if [ "$notify_type" = "pre" ] && [ "$notify_operation" = "start" ]; then
 		ocf_log info "pre_notify_start: running peer membership check for starting node"
 		check_peer
