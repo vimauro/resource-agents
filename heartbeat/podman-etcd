@@ -2531,7 +2531,7 @@ podman_notify()
 	# no monitor runs to set it. pre_notify_start fires before start,
 	# so we add the learner here to break the deadlock
 	if [ "$notify_type" = "pre" ] && [ "$notify_operation" = "start" ]; then
-		ocf_log info "pre_notify_start: running peer membership check for starting node"
+		ocf_log info "pre_notify_start: running peer membership check for ${OCF_RESKEY_CRM_meta_notify_start_uname}"
 		check_peer
 	fi
 }
@@ -2616,4 +2616,4 @@ validate-all)	podman_validate;;
 esac
 rc=$?
 ocf_log debug "${OCF_RESOURCE_INSTANCE} $__OCF_ACTION : $rc"
-exit $rc
+exc
