@@ -2616,4 +2616,4 @@ validate-all)	podman_validate;;
 esac
 rc=$?
 ocf_log debug "${OCF_RESOURCE_INSTANCE} $__OCF_ACTION : $rc"
-exc
+exit $rc
