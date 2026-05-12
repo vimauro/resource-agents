@@ -1530,7 +1530,7 @@ is_peer_machine_deleting()
 	local item_count
 
 	# Try MAPI first (machine.openshift.io), fall back to CAPI (cluster.x-k8s.io)
-	out=$(timeout 10 oc --kubeconfig="$OCF_RESKEY_kubeconfig" get machines.machine.openshift.io \
+	out=$(timeout 5 oc --kubeconfig="$OCF_RESKEY_kubeconfig" get machines.machine.openshift.io \
 		-n openshift-machine-api -o json 2>&1)
 	oc_rc=$?
 
@@ -1607,6 +1607,7 @@ manage_peer_membership()
 	# NOTE: voting members have a "name" field but no "isLearner" field,
 	# while learner members have "isLearner": true (boolean) but no "name" field, so we search for peerURLs matching.
 	peer_member_id=$(printf "%s" "$member_list_json" | jq -r ".members[] | select( .peerURLs | map(test(\"$peer_member_ip\")) | any).ID")
+	
 	# During Machine deletion, CEO's MachineDeletionHooksController
 	# keeps the EtcdQuorumOperator preDrain hook as long as the peer IP appears in the etcd
 	# member list (learners included). If we add or keep a learner for a peer whose Machine
