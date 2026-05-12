@@ -1541,9 +1541,10 @@ is_peer_machine_deleting()
 	# MAPI CRD missing, namespace absent, or no Machine objects — try CAPI
 	if [ $oc_rc -ne 0 ] || [ "${item_count:-0}" -eq 0 ]; then
 		ocf_log info "MAPI returned no machines, trying CAPI for node $node_name"
-		out=$(timeout 10 oc --kubeconfig="$OCF_RESKEY_kubeconfig" get machines.cluster.x-k8s.io \
+		out=$(timeout 5 oc --kubeconfig="$OCF_RESKEY_kubeconfig" get machines.cluster.x-k8s.io \
 			-n openshift-cluster-api -o json 2>&1)
-		if [ $? -ne 0 ]; then
+		oc_rc=$?
+		if [ $oc_rc -ne 0 ]; then
 			ocf_log warn "could not query Machine API (MAPI or CAPI) for node $node_name (fail-open): $out"
 			return 1
 		fi
